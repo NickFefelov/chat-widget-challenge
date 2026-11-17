@@ -3,8 +3,12 @@ import { chunks, streamReply } from './chatService'
 import { REPLIES } from './replies'
 import type { BotEvent, ChatMessage } from './types'
 
-function historyWithUserTurns(count: number): ChatMessage[] {
-  return Array.from({ length: count }, (_, i) => ({ id: String(i), role: 'user', text: 'hi' }))
+function historyWithUserTurns(count: number, conversation = 'c'): ChatMessage[] {
+  return Array.from({ length: count }, (_, i) => ({
+    id: `${conversation}-${i}`,
+    role: 'user',
+    text: 'hi',
+  }))
 }
 
 async function collect(stream: AsyncGenerator<BotEvent>): Promise<BotEvent[]> {
@@ -44,10 +48,24 @@ describe('streamReply', () => {
     await expect(result).rejects.toMatchObject({ name: 'AbortError' })
   })
 
-  it('fails mid-stream on the fourth turn', async () => {
-    const result = collect(streamReply(historyWithUserTurns(4), new AbortController().signal))
-    const assertion = expect(result).rejects.toThrow('Network error')
+  it('fails mid-stream on the fourth turn, and a retry of that turn succeeds', async () => {
+    const history = historyWithUserTurns(4, 'retry')
+    const failed = collect(streamReply(history, new AbortController().signal))
+    const assertion = expect(failed).rejects.toThrow('Network error')
     await vi.runAllTimersAsync()
     await assertion
+
+    const retried = collect(streamReply(history, new AbortController().signal))
+    await vi.runAllTimersAsync()
+    expect(tokensOf(await retried)).toBe(REPLIES[3].markdown)
+  })
+
+  it('rejects a history that does not end with a user message', async () => {
+    const history: ChatMessage[] = [
+      { id: '1', role: 'user', text: 'hi' },
+      { id: '2', role: 'assistant', text: 'hello' },
+    ]
+    const result = collect(streamReply(history, new AbortController().signal))
+    await expect(result).rejects.toThrow('Bad request')
   })
 })
